@@ -1,0 +1,35 @@
+{
+  "project": {
+    "name": "ScreenTranslate",
+    "package": "com.screentranslate",
+    "min_sdk": 26,
+    "target_sdk": 35,
+    "kotlin_version": "2.0.0"
+  },
+  "modules": {
+    "core": [
+      "common",
+      "capture",
+      "ocr",
+      "translation",
+      "overlay"
+    ],
+    "feature": [
+      "translator"
+    ]
+  },
+  "dependencies": {
+    "hilt": true,
+    "room": true,
+    "retrofit": true,
+    "mlkit_text": true,
+    "tensorflow_lite": true,
+    "coroutines": true,
+    "datastore": true
+  },
+  "options": {
+    "generate_tests": true,
+    "generate_di": true,
+    "generate_base_classes": true
+  }
+}

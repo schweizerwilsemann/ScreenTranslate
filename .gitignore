@@ -1,0 +1,9 @@
+# Build outputs
+build/
+app/build/
+**/build/
+.gradle/
+
+# Local config
+local.properties
+*.keystore
