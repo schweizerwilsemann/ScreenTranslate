@@ -35,8 +35,7 @@ class OverlayManager @Inject constructor(
             overlayWindowType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_SECURE,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -49,8 +48,9 @@ class OverlayManager @Inject constructor(
         }.isSuccess
     }
 
-    fun update(entries: List<Pair<String, Rect>>) {
-        overlayView?.render(entries)
+    fun update(entries: List<Pair<String, Rect>>, sourceWidth: Int = 0, sourceHeight: Int = 0) {
+        Log.d(TAG, "Overlay update entries=${entries.size} source=${sourceWidth}x$sourceHeight")
+        overlayView?.render(entries, sourceWidth, sourceHeight)
     }
 
     fun hide() {
@@ -71,6 +71,6 @@ class OverlayManager @Inject constructor(
         }
 
     private companion object {
-        const val TAG = "OverlayManager"
+        const val TAG = "ScreenOverlayManager"
     }
 }

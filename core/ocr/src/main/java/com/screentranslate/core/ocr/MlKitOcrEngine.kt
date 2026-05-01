@@ -42,13 +42,23 @@ class MlKitOcrEngine @Inject constructor() : OcrEngine {
     }
 
     private fun Text.toTextBlocks(): List<TextBlock> =
-        textBlocks.map { block ->
-            val rect = block.boundingBox ?: Rect()
-            TextBlock(
-                text = block.text,
-                boundingBox = BoundingBox(rect.left, rect.top, rect.right, rect.bottom),
+        textBlocks.flatMap { block ->
+            block.lines.takeIf { it.isNotEmpty() }?.map { line ->
+                val rect = line.boundingBox ?: Rect()
+                TextBlock(
+                    text = line.text,
+                    boundingBox = BoundingBox(rect.left, rect.top, rect.right, rect.bottom),
+                )
+            } ?: listOf(
+                TextBlock(
+                    text = block.text,
+                    boundingBox = (block.boundingBox ?: Rect()).toBoundingBox(),
+                ),
             )
         }
+
+    private fun Rect.toBoundingBox(): BoundingBox =
+        BoundingBox(left, top, right, bottom)
 
     private fun Rect.clampTo(maxWidth: Int, maxHeight: Int): Rect =
         Rect(

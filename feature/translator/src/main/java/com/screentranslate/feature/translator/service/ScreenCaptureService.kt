@@ -25,7 +25,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -38,12 +38,17 @@ class ScreenCaptureService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val notificationManager by lazy { getSystemService(NotificationManager::class.java) }
     private var frameCollectorJob: Job? = null
+    private var ocrJob: Job? = null
     private var capturedFrameCount = 0
     private var lastOcrMillis = 0L
     private var captureActive = false
     private var foregroundStarted = false
     private var lastStatusMessage = "Screen capture is stopped"
     private var overlayAvailable = false
+    private var lastOverlayEntries: List<Pair<String, Rect>> = emptyList()
+    private var lastOverlaySourceWidth = 0
+    private var lastOverlaySourceHeight = 0
+    private var lastOverlayUpdateMillis = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -106,7 +111,7 @@ class ScreenCaptureService : Service() {
                 captureActive = true
                 capturedFrameCount = 0
                 lastOcrMillis = 0L
-                overlayAvailable = showReadyOverlay()
+                overlayAvailable = false
                 observeCapturedFrames()
                 updateNotification("Screen capture is active")
                 publishStatus("Screen capture is active", isRunning = true)
@@ -128,62 +133,72 @@ class ScreenCaptureService : Service() {
         Log.d(TAG, "Stopping screen capture")
         frameCollectorJob?.cancel()
         frameCollectorJob = null
+        ocrJob?.cancel()
+        ocrJob = null
         captureManager.stopCapture()
         overlayManager.hide()
         captureActive = false
         overlayAvailable = false
+        lastOverlayEntries = emptyList()
+        lastOverlaySourceWidth = 0
+        lastOverlaySourceHeight = 0
+        lastOverlayUpdateMillis = 0L
         publishStatus(message, isRunning = false)
         stopForegroundAndRemoveNotification()
-    }
-
-    private fun showReadyOverlay(): Boolean {
-        val shown = overlayManager.show()
-        if (shown) {
-            overlayManager.update(
-                listOf(
-                    "ScreenTranslate ready" to Rect(48, 96, 720, 172),
-                    "Waiting for captured frames" to Rect(48, 188, 860, 264),
-                ),
-            )
-        } else {
-            Log.w(TAG, "Overlay window is not available. Capture and OCR will continue.")
-        }
-        return shown
     }
 
     private fun observeCapturedFrames() {
         frameCollectorJob?.cancel()
         frameCollectorJob = serviceScope.launch {
-            captureManager.frames.collectLatest { frame ->
+            captureManager.frames.collect { frame ->
                 capturedFrameCount += 1
                 if (capturedFrameCount == 1) {
                     Log.d(TAG, "First captured frame: ${frame.bitmap.width}x${frame.bitmap.height}")
                 }
                 if (capturedFrameCount == 1 || capturedFrameCount % NOTIFICATION_FRAME_INTERVAL == 0) {
                     val message = "Captured $capturedFrameCount frames"
+                    Log.d(TAG, message)
                     updateNotification(message)
                     publishStatus(message, isRunning = true)
                 }
                 val now = System.currentTimeMillis()
-                if (now - lastOcrMillis >= MIN_OCR_INTERVAL_MS) {
+                val ocrIsRunning = ocrJob?.isActive == true
+                if (!ocrIsRunning && now - lastOcrMillis >= MIN_OCR_INTERVAL_MS) {
                     lastOcrMillis = now
-                    recognizeAndRender(frame.bitmap)
+                    ocrJob = serviceScope.launch {
+                        recognizeAndRender(frame.bitmap)
+                    }
                 }
             }
         }
     }
 
     private suspend fun recognizeAndRender(bitmap: android.graphics.Bitmap) {
+        val startedAt = System.currentTimeMillis()
+        Log.d(TAG, "OCR started for ${bitmap.width}x${bitmap.height}")
         when (val result = ocrRepository.recognize(bitmap)) {
             is Result.Success -> {
-                val blocks = result.data
-                val message = "OCR detected ${blocks.size} text blocks"
+                val rawBlocks = result.data
+                val blocks = rawBlocks.filterReadableContent(bitmap.width, bitmap.height)
+                Log.d(
+                    TAG,
+                    "OCR raw=${rawBlocks.size} filtered=${blocks.size}; filtered lines: ${
+                        blocks.take(MAX_DEBUG_OCR_LINES).joinToString(" | ") { block ->
+                            "\"${block.text.take(MAX_DEBUG_TEXT_LENGTH)}\" @ ${block.boundingBox}"
+                        }
+                    }",
+                )
+                val elapsedMillis = System.currentTimeMillis() - startedAt
+                val message = "OCR detected ${blocks.size} text lines in ${elapsedMillis}ms"
+                Log.d(TAG, message)
                 updateNotification(message)
                 publishStatus(message, isRunning = true)
-                overlayManager.update(blocks.toOverlayEntries())
+                updateOcrOverlay(blocks.toOverlayEntries(), bitmap.width, bitmap.height)
             }
             is Result.Error -> {
-                val message = result.message ?: result.exception.message ?: "OCR failed"
+                val elapsedMillis = System.currentTimeMillis() - startedAt
+                val message = result.message ?: result.exception.message ?: "OCR failed after ${elapsedMillis}ms"
+                Log.e(TAG, message, result.exception)
                 updateNotification(message)
                 publishStatus(message, isRunning = true)
             }
@@ -193,11 +208,64 @@ class ScreenCaptureService : Service() {
 
     private fun List<TextBlock>.toOverlayEntries(): List<Pair<String, Rect>> {
         if (isEmpty()) {
-            return listOf("No text detected" to Rect(48, 96, 640, 172))
+            return emptyList()
         }
         return take(MAX_OVERLAY_BLOCKS).map { block ->
             block.text.take(MAX_OVERLAY_TEXT_LENGTH) to block.boundingBox.toRect()
         }
+    }
+
+    private fun updateOcrOverlay(entries: List<Pair<String, Rect>>, sourceWidth: Int, sourceHeight: Int) {
+        val now = System.currentTimeMillis()
+        if (entries.isNotEmpty()) {
+            lastOverlayEntries = entries
+            lastOverlaySourceWidth = sourceWidth
+            lastOverlaySourceHeight = sourceHeight
+            lastOverlayUpdateMillis = now
+            ensureOverlayVisible()
+            overlayManager.update(entries, sourceWidth, sourceHeight)
+            return
+        }
+
+        if (lastOverlayEntries.isNotEmpty() && now - lastOverlayUpdateMillis < EMPTY_OVERLAY_CLEAR_DELAY_MS) {
+            Log.d(TAG, "Keeping last OCR overlay because current OCR result is empty")
+            ensureOverlayVisible()
+            overlayManager.update(lastOverlayEntries, lastOverlaySourceWidth, lastOverlaySourceHeight)
+            return
+        }
+
+        lastOverlayEntries = emptyList()
+        overlayManager.hide()
+        overlayAvailable = false
+    }
+
+    private fun ensureOverlayVisible() {
+        if (overlayAvailable) return
+        overlayAvailable = overlayManager.show()
+        if (!overlayAvailable) {
+            Log.w(TAG, "Overlay window is not available for update")
+        }
+    }
+
+    private fun List<TextBlock>.filterReadableContent(sourceWidth: Int, sourceHeight: Int): List<TextBlock> {
+        val topIgnoredPx = (sourceHeight * TOP_SYSTEM_AREA_RATIO).toInt()
+        val bottomIgnoredPx = (sourceHeight * BOTTOM_SYSTEM_AREA_RATIO).toInt()
+        return asSequence()
+            .filter { block ->
+                val rect = block.boundingBox.toRect()
+                val text = block.text.trim()
+                val verticalCenter = rect.centerY()
+                val width = rect.width()
+                val height = rect.height()
+                verticalCenter > topIgnoredPx &&
+                    verticalCenter < sourceHeight - bottomIgnoredPx &&
+                    width >= sourceWidth * MIN_LINE_WIDTH_RATIO &&
+                    height >= MIN_LINE_HEIGHT_PX &&
+                    text.length >= MIN_TEXT_LENGTH &&
+                    text.any { it.isLetter() }
+            }
+            .sortedWith(compareBy<TextBlock> { it.boundingBox.top }.thenBy { it.boundingBox.left })
+            .toList()
     }
 
     private fun updateNotification(message: String) {
@@ -300,10 +368,18 @@ class ScreenCaptureService : Service() {
         private const val EXTRA_PROJECTION_DATA = "extra_projection_data"
         private const val CHANNEL_ID = "screen_capture"
         private const val NOTIFICATION_ID = 1001
-        private const val MIN_OCR_INTERVAL_MS = 1_500L
-        private const val NOTIFICATION_FRAME_INTERVAL = 10
-        private const val MAX_OVERLAY_BLOCKS = 8
-        private const val MAX_OVERLAY_TEXT_LENGTH = 80
+        private const val MIN_OCR_INTERVAL_MS = 1_000L
+        private const val NOTIFICATION_FRAME_INTERVAL = 5
+        private const val MAX_OVERLAY_BLOCKS = 24
+        private const val MAX_OVERLAY_TEXT_LENGTH = 120
+        private const val MAX_DEBUG_OCR_LINES = 8
+        private const val MAX_DEBUG_TEXT_LENGTH = 48
+        private const val EMPTY_OVERLAY_CLEAR_DELAY_MS = 3_000L
+        private const val TOP_SYSTEM_AREA_RATIO = 0.08f
+        private const val BOTTOM_SYSTEM_AREA_RATIO = 0.06f
+        private const val MIN_LINE_WIDTH_RATIO = 0.04f
+        private const val MIN_LINE_HEIGHT_PX = 12
+        private const val MIN_TEXT_LENGTH = 2
 
         fun createStartIntent(context: Context, resultCode: Int, data: Intent): Intent =
             Intent(context, ScreenCaptureService::class.java).apply {
