@@ -37,6 +37,7 @@ dependencies {
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
     implementation(libs.tflite)
+    implementation(libs.mlkit.translate)
     ksp(libs.room.compiler)
 }
 

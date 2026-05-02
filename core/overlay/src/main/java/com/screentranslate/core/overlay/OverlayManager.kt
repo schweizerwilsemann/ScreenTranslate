@@ -53,6 +53,11 @@ class OverlayManager @Inject constructor(
         overlayView?.render(entries, sourceWidth, sourceHeight)
     }
 
+    fun updateSubtitle(text: String) {
+        Log.d(TAG, "Subtitle overlay update chars=${text.length}")
+        overlayView?.renderSubtitle(text)
+    }
+
     fun hide() {
         overlayView?.let(windowManager::removeView)
         overlayView = null

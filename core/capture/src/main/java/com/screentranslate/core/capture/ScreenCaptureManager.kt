@@ -41,6 +41,7 @@ class ScreenCaptureManager @Inject constructor(
     private var imageHandler: Handler? = null
     private var latestFrame: CapturedFrame? = null
     private var lastEmitMillis: Long = 0L
+    @Volatile private var reconfiguringSurface = false
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -62,26 +63,10 @@ class ScreenCaptureManager @Inject constructor(
             val height = metrics.heightPixels.coerceAtLeast(1)
             val densityDpi = metrics.densityDpi
 
-            imageThread = HandlerThread(IMAGE_THREAD_NAME).apply { start() }
-            imageHandler = Handler(requireNotNull(imageThread).looper)
-            imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, MAX_IMAGES)
-            imageReader?.setOnImageAvailableListener(
-                ImageReader.OnImageAvailableListener { reader -> onImageAvailable(reader) },
-                imageHandler,
-            )
-
             mediaProjection = projection
-            projection.registerCallback(projectionCallback, imageHandler)
-            virtualDisplay = projection.createVirtualDisplay(
-                VIRTUAL_DISPLAY_NAME,
-                width,
-                height,
-                densityDpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                imageReader?.surface,
-                null,
-                imageHandler,
-            )
+            val handler = ensureImageHandler()
+            projection.registerCallback(projectionCallback, handler)
+            createCaptureSurface(projection, width, height, densityDpi, handler)
             Log.d(TAG, "VirtualDisplay created: ${width}x$height @ ${densityDpi}dpi")
         }.fold(
             onSuccess = { Result.Success(Unit) },
@@ -97,8 +82,39 @@ class ScreenCaptureManager @Inject constructor(
         releaseCaptureResources(stopProjection = true)
     }
 
+    fun refreshForCurrentDisplayIfNeeded(): Boolean {
+        val projection = mediaProjection ?: return false
+        val currentReader = imageReader ?: return false
+        val metrics = context.resources.displayMetrics
+        val width = metrics.widthPixels.coerceAtLeast(1)
+        val height = metrics.heightPixels.coerceAtLeast(1)
+        if (currentReader.width == width && currentReader.height == height) {
+            return false
+        }
+
+        return runCatching {
+            reconfiguringSurface = true
+            imageReader?.setOnImageAvailableListener(null, null)
+            virtualDisplay?.release()
+            virtualDisplay = null
+            imageReader?.close()
+            imageReader = null
+            latestFrame = null
+            lastEmitMillis = 0L
+            createCaptureSurface(projection, width, height, metrics.densityDpi, ensureImageHandler())
+            Log.d(TAG, "VirtualDisplay recreated for display change: ${width}x$height @ ${metrics.densityDpi}dpi")
+            true
+        }.getOrElse { exception ->
+            Log.e(TAG, "Unable to refresh screen capture surface", exception)
+            false
+        }.also {
+            reconfiguringSurface = false
+        }
+    }
+
     private fun releaseCaptureResources(stopProjection: Boolean) {
         val projection = mediaProjection
+        reconfiguringSurface = true
         imageReader?.setOnImageAvailableListener(null, null)
         virtualDisplay?.release()
         virtualDisplay = null
@@ -114,6 +130,7 @@ class ScreenCaptureManager @Inject constructor(
         imageHandler = null
         latestFrame = null
         lastEmitMillis = 0L
+        reconfiguringSurface = false
     }
 
     override suspend fun capture(region: RegionOfInterest?): Result<CapturedFrame> =
@@ -133,6 +150,7 @@ class ScreenCaptureManager @Inject constructor(
         val now = System.currentTimeMillis()
         val image = reader.acquireLatestImage() ?: return
         image.use { currentImage ->
+            if (reconfiguringSurface) return
             if (now - lastEmitMillis < MIN_FRAME_INTERVAL_MS) return
             val bitmap = currentImage.toBitmap()
             val frame = CapturedFrame(bitmap = bitmap, timestampMillis = now)
@@ -140,6 +158,39 @@ class ScreenCaptureManager @Inject constructor(
             lastEmitMillis = now
             mutableFrames.tryEmit(frame)
         }
+    }
+
+    private fun ensureImageHandler(): Handler {
+        imageHandler?.let { return it }
+        val thread = HandlerThread(IMAGE_THREAD_NAME).apply { start() }
+        imageThread = thread
+        return Handler(thread.looper).also { handler ->
+            imageHandler = handler
+        }
+    }
+
+    private fun createCaptureSurface(
+        projection: MediaProjection,
+        width: Int,
+        height: Int,
+        densityDpi: Int,
+        handler: Handler,
+    ) {
+        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, MAX_IMAGES)
+        imageReader?.setOnImageAvailableListener(
+            ImageReader.OnImageAvailableListener { reader -> onImageAvailable(reader) },
+            handler,
+        )
+        virtualDisplay = projection.createVirtualDisplay(
+            VIRTUAL_DISPLAY_NAME,
+            width,
+            height,
+            densityDpi,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            imageReader?.surface,
+            null,
+            handler,
+        )
     }
 
     private fun Image.toBitmap(): Bitmap {

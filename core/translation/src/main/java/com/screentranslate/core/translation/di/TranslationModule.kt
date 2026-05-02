@@ -6,7 +6,7 @@ import com.screentranslate.core.translation.TranslationEngine
 import com.screentranslate.core.translation.cache.TranslationCache
 import com.screentranslate.core.translation.cache.db.TranslationDao
 import com.screentranslate.core.translation.cache.db.TranslationDatabase
-import com.screentranslate.core.translation.online.GoogleTranslateEngine
+import com.screentranslate.core.translation.offline.MlKitTranslateEngine
 import com.screentranslate.core.translation.online.api.TranslationApiService
 import com.screentranslate.core.translation.repository.TranslationRepository
 import dagger.Module
@@ -42,7 +42,7 @@ object TranslationModule {
 
     @Provides
     @Singleton
-    fun provideTranslationEngine(engine: GoogleTranslateEngine): TranslationEngine = engine
+    fun provideTranslationEngine(engine: MlKitTranslateEngine): TranslationEngine = engine
 
     @Provides
     @Singleton

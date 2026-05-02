@@ -6,6 +6,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
@@ -46,7 +47,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         mediaProjectionManager = getSystemService(MediaProjectionManager::class.java)
         setContentView(createContentView())
-        requestNotificationPermissionIfNeeded()
+        requestRuntimePermissionsIfNeeded()
         updateStatus()
     }
 
@@ -76,7 +77,7 @@ class MainActivity : Activity() {
 
         if (resultCode == RESULT_OK && data != null) {
             startForegroundServiceCompat(ScreenCaptureService.createStartIntent(this, resultCode, data))
-            serviceMessage = "Starting screen capture."
+            serviceMessage = "Starting video subtitle translation."
             serviceRunning = false
             updateStatus()
         } else {
@@ -98,15 +99,15 @@ class MainActivity : Activity() {
         }
 
         val startButton = Button(this).apply {
-            text = "Start screen OCR"
+            text = "Start video subtitles"
             setOnClickListener { startCapturePermissionFlow() }
         }
 
         val stopButton = Button(this).apply {
-            text = "Stop screen OCR"
+            text = "Stop video subtitles"
             setOnClickListener {
                 startService(ScreenCaptureService.createStopIntent(this@MainActivity))
-                serviceMessage = "Stopping screen capture."
+                serviceMessage = "Stopping video subtitle translation."
                 serviceRunning = false
                 updateStatus()
             }
@@ -128,7 +129,7 @@ class MainActivity : Activity() {
 
     private fun startCapturePermissionFlow() {
         if (!Settings.canDrawOverlays(this)) {
-            serviceMessage = "Overlay permission is required before screen OCR can start."
+            serviceMessage = "Overlay permission is required before video subtitles can start."
             serviceRunning = false
             updateStatus()
             openOverlaySettings()
@@ -176,9 +177,19 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun requestNotificationPermissionIfNeeded() {
+    private fun requestRuntimePermissionsIfNeeded() {
+        val permissions = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
+            permissions += Manifest.permission.POST_NOTIFICATIONS
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            permissions += Manifest.permission.RECORD_AUDIO
+        }
+
+        val missingPermissions = permissions
+            .filter { permission -> checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED }
+        if (missingPermissions.isNotEmpty()) {
+            requestPermissions(missingPermissions.toTypedArray(), REQUEST_RUNTIME_PERMISSIONS)
         }
     }
 
@@ -189,12 +200,12 @@ class MainActivity : Activity() {
             "missing"
         }
         val serviceStatus = if (serviceRunning) "running" else "stopped"
-        val serviceOverlayStatus = if (overlayAvailableInService) "shown" else "not shown"
+        val subtitleOverlayStatus = if (overlayAvailableInService) "shown" else "not shown"
         statusText.text = buildString {
             appendLine("Overlay permission: $overlayStatus")
             appendLine("Service: $serviceStatus")
             appendLine("Frames captured: $capturedFrameCount")
-            appendLine("Service overlay: $serviceOverlayStatus")
+            appendLine("Subtitle overlay: $subtitleOverlayStatus")
             append(serviceMessage)
         }
     }
@@ -212,6 +223,6 @@ class MainActivity : Activity() {
 
     private companion object {
         const val REQUEST_SCREEN_CAPTURE = 4100
-        const val REQUEST_NOTIFICATIONS = 4101
+        const val REQUEST_RUNTIME_PERMISSIONS = 4101
     }
 }

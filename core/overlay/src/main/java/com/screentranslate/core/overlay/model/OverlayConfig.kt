@@ -11,4 +11,10 @@ data class OverlayConfig(
     val paddingPx: Int = 10,
     val cornerRadiusPx: Int = 10,
     val drawText: Boolean = false,
+    val subtitleTextSizeSp: Float = 24f,
+    val subtitleTextColor: Int = 0xFFFFEB3B.toInt(),
+    val subtitleBackgroundColor: Int = 0xEE000000.toInt(),
+    val subtitleBottomRatio: Float = 0.58f,
+    val subtitleMaxWidthRatio: Float = 0.88f,
+    val subtitleMaxLines: Int = 3,
 )

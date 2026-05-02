@@ -5,6 +5,9 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
+import android.graphics.Typeface
+import android.text.Layout
+import android.text.StaticLayout
 import android.text.TextPaint
 import android.text.TextUtils
 import android.util.AttributeSet
@@ -19,6 +22,7 @@ class OverlayView @JvmOverloads constructor(
     private var entries: List<Pair<String, Rect>> = emptyList()
     private var sourceWidth: Int = 0
     private var sourceHeight: Int = 0
+    private var subtitleText: String = ""
 
     private val density = resources.displayMetrics.density
     private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -36,6 +40,14 @@ class OverlayView @JvmOverloads constructor(
         style = Paint.Style.STROKE
         strokeWidth = 1.5f * density
     }
+    private val subtitleTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = config.subtitleTextColor
+        textSize = config.subtitleTextSizeSp * resources.displayMetrics.scaledDensity
+        typeface = Typeface.DEFAULT_BOLD
+    }
+    private val subtitleBackgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = config.subtitleBackgroundColor
+    }
 
     fun configure(config: OverlayConfig) {
         this.config = config
@@ -44,19 +56,43 @@ class OverlayView @JvmOverloads constructor(
         backgroundPaint.color = config.backgroundColor
         highlightPaint.color = config.highlightColor
         borderPaint.color = config.borderColor
+        subtitleTextPaint.color = config.subtitleTextColor
+        subtitleTextPaint.textSize = config.subtitleTextSizeSp * resources.displayMetrics.scaledDensity
+        subtitleBackgroundPaint.color = config.subtitleBackgroundColor
         invalidate()
     }
 
     fun render(entries: List<Pair<String, Rect>>, sourceWidth: Int = 0, sourceHeight: Int = 0) {
-        if (this.entries == entries && this.sourceWidth == sourceWidth && this.sourceHeight == sourceHeight) return
+        if (
+            subtitleText.isBlank() &&
+            this.entries == entries &&
+            this.sourceWidth == sourceWidth &&
+            this.sourceHeight == sourceHeight
+        ) return
+        subtitleText = ""
         this.entries = entries
         this.sourceWidth = sourceWidth
         this.sourceHeight = sourceHeight
         invalidate()
     }
 
+    fun renderSubtitle(text: String) {
+        val normalizedText = text.trim()
+        if (subtitleText == normalizedText && entries.isEmpty()) return
+        subtitleText = normalizedText
+        entries = emptyList()
+        sourceWidth = 0
+        sourceHeight = 0
+        invalidate()
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        if (subtitleText.isNotBlank()) {
+            drawSubtitle(canvas, subtitleText)
+            return
+        }
+
         entries.forEach { (text, bounds) ->
             if (text.isBlank() || bounds.isEmpty) return@forEach
 
@@ -71,6 +107,54 @@ class OverlayView @JvmOverloads constructor(
                 drawSingleLineText(canvas, displayText, labelBounds)
             }
         }
+    }
+
+    private fun drawSubtitle(canvas: Canvas, text: String) {
+        if (width <= 0 || height <= 0) return
+        val displayText = text
+            .lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .take(config.subtitleMaxLines)
+            .joinToString("\n")
+            .take(MAX_SUBTITLE_CHARS)
+        if (displayText.isBlank()) return
+
+        val horizontalPadding = 14f * density
+        val verticalPadding = 9f * density
+        val edgeMargin = EDGE_MARGIN_PX * density
+        val maxPanelWidth = (width - edgeMargin * 2f).coerceAtLeast(1f)
+        val maxTextWidth = (width * config.subtitleMaxWidthRatio - horizontalPadding * 2f)
+            .coerceAtMost(maxPanelWidth - horizontalPadding * 2f)
+            .coerceAtLeast(1f)
+            .toInt()
+
+        val layout = StaticLayout.Builder
+            .obtain(displayText, 0, displayText.length, subtitleTextPaint, maxTextWidth)
+            .setAlignment(Layout.Alignment.ALIGN_CENTER)
+            .setEllipsize(TextUtils.TruncateAt.END)
+            .setMaxLines(config.subtitleMaxLines)
+            .setIncludePad(false)
+            .build()
+
+        val panelWidth = (layout.width + horizontalPadding * 2f).coerceAtMost(maxPanelWidth)
+        val panelHeight = layout.height + verticalPadding * 2f
+        val left = ((width - panelWidth) / 2f).coerceAtLeast(edgeMargin)
+        val bottom = (height * config.subtitleBottomRatio)
+            .coerceIn(panelHeight + edgeMargin, height - edgeMargin)
+        val top = bottom - panelHeight
+        val panelBounds = RectF(left, top, left + panelWidth, bottom)
+
+        canvas.drawRoundRect(
+            panelBounds,
+            config.cornerRadiusPx.toFloat() * density,
+            config.cornerRadiusPx.toFloat() * density,
+            subtitleBackgroundPaint,
+        )
+        canvas.save()
+        canvas.translate(panelBounds.left + horizontalPadding, panelBounds.top + verticalPadding)
+        layout.draw(canvas)
+        canvas.restore()
     }
 
     private fun Rect.toCanvasRect(): RectF {
@@ -129,6 +213,7 @@ class OverlayView @JvmOverloads constructor(
 
     private companion object {
         const val MAX_TEXT_CHARS = 96
+        const val MAX_SUBTITLE_CHARS = 240
         const val EDGE_MARGIN_PX = 8
         const val MIN_TEXT_SIZE_SP = 9f
     }
